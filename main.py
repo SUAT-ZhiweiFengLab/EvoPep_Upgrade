@@ -1,5 +1,15 @@
+import os
+import sys
+
+os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
+os.environ["OMP_NUM_THREADS"] = "1"
+
 import torch
+
 from evopep import EvoPep
+
+torch.manual_seed(int(sys.argv[1]) if len(sys.argv) > 1 else 0)
+torch.use_deterministic_algorithms(True)
 
 def main():
     print("==================================================")

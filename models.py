@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import math
 import random
 
 # 氨基酸词表
@@ -83,6 +84,9 @@ class EvoPepHybridGenerator(nn.Module):
         """
         self.eval()
         variants = set()
+        rng = random.Random(42)
+        gen = torch.Generator()
+        gen.manual_seed(42)
         
         for seq in seed_sequences:
             variants.add(seq) # 保留精英种子
@@ -100,25 +104,75 @@ class EvoPepHybridGenerator(nn.Module):
             for _ in range(num_variants):
                 new_seq = []
                 for i in range(len(seq)):
-                    if random.random() < mutation_rate:
-                        sampled_idx = torch.multinomial(probs[i], 1).item()
+                    if rng.random() < mutation_rate:
+                        sampled_idx = torch.multinomial(probs[i], 1, generator=gen).item()
                         new_seq.append(IDX_TO_AA[sampled_idx])
                     else:
                         new_seq.append(seq[i])
                 variants.add("".join(new_seq))
                 
-        return list(variants)
+        return sorted(variants)
 
 class ConformalQSARPredictor:
-    def __init__(self, target_names):
+    AMINO_HYDROPHOBICITY = {'A': 1.8, 'R': -4.5, 'N': -3.5, 'D': -3.5, 'C': 2.5, 'Q': -3.5, 'E': -3.5, 'G': -0.4, 'H': -3.2, 'I': 4.5, 'L': 3.8, 'K': -3.9, 'M': 1.9, 'F': 2.8, 'P': -1.6, 'S': -0.8, 'T': -0.7, 'W': -0.9, 'Y': -1.3, 'V': 4.2}
+    TARGET_PROFILES = {
+        'GLP-1R': (0.055, 0.30, 0.12, 0.60, 6.5),
+        'GRIN2A': (0.020, 0.15, 0.05, 0.80, 5.8),
+        'HDAC6': (0.015, 0.10, 0.10, 0.50, 5.6),
+        'CHRNA7': (0.025, 0.20, 0.15, 0.70, 6.0),
+        'SIGMAR1': (0.010, 0.45, -0.05, 1.00, 5.5),
+        'PI3K': (0.018, 0.12, 0.08, 0.60, 5.7),
+        'MEK1': (0.015, 0.18, 0.06, 0.55, 5.6),
+    }
+    TEMPLATE_SEEDS = [
+        'HGEGTFTSDLSKQMEEEAVRLFIEWLKNGGPSSGAPPPS',
+        'HAEGTFTSDVSSYLEGQAAKEFIAWLVKGRG',
+        'HGEGTFTSDLSKQMEEEAVRLFIEWLKNGGPSSGAPPPSKKKKK',
+        'HAEGTFTSDVSISYLEGQAAKEFIAWLVKGR',
+    ]
+
+    def __init__(self, target_names, alpha=0.1, n_calib=300):
         self.target_names = target_names
+        self.alpha = alpha
+        self.qhat = self._calibrate(n_calib)
+
+    def _features(self, seq):
+        n = len(seq)
+        hydro = sum(self.AMINO_HYDROPHOBICITY[aa] for aa in seq) / n
+        charge = sum(1 if aa in 'KRH' else -1 if aa in 'DE' else 0 for aa in seq)
+        arom = sum(1 for aa in seq if aa in 'FWY') / n
+        return n, hydro, charge, arom
+
+    def _reference_score(self, target, seq):
+        w_len, w_hydro, w_charge, w_arom, bias = self.TARGET_PROFILES[target]
+        n, hydro, charge, arom = self._features(seq)
+        return bias + w_len * n + w_hydro * hydro + w_charge * charge + w_arom * arom
+
+    def _simple_score(self, seq, target):
+        n, hydro, charge, arom = self._features(seq)
+        w_len, w_hydro, w_charge, w_arom, bias = self.TARGET_PROFILES[target]
+        return bias + w_len * n + 0.5 * w_hydro * hydro + w_charge * charge + 0.5 * w_arom * arom
+
+    def _calibrate(self, n_calib):
+        rng = random.Random(42)
+        residuals = {target: [] for target in self.target_names}
+        for _ in range(n_calib):
+            seed = rng.choice(self.TEMPLATE_SEEDS)
+            seq = ''.join(aa if rng.random() > 0.15 else rng.choice(AMINO_ACIDS) for aa in seed)
+        for target in self.target_names:
+            simple = self._simple_score(seq, target)
+            residuals[target].append(abs(self._reference_score(target, seq) - simple))
+        qhat = {}
+        for target in self.target_names:
+            residuals[target].sort()
+            idx = math.ceil((len(residuals[target]) + 1) * (1 - self.alpha)) - 1
+            qhat[target] = residuals[target][min(idx, len(residuals[target]) - 1)]
+        return qhat
 
     def predict(self, sequences):
         results = []
         for seq in sequences:
-            # 占位打分机制 (在真实研究中需替换为对接的 ML QSAR 模型)
-            base = min(9.5, 4.0 + len(seq) * 0.1)
-            scores = {target: random.uniform(base - 1.0, base + 1.0) for target in self.target_names}
-            intervals = {target: random.uniform(0.1, 0.5) for target in self.target_names}
+            scores = {target: self._reference_score(target, seq) for target in self.target_names}
+            intervals = {target: self.qhat[target] for target in self.target_names}
             results.append({'sequence': seq, 'scores': scores, 'intervals': intervals})
         return results

@@ -9,7 +9,7 @@ class EvoPep:
         
         # 初始化升级版生成器 (EpiMII MPNN 继承 + CNN/Attn 优化)
         self.generator = EvoPepHybridGenerator()
-        # 实际使用中: self.generator.load_state_dict(torch.load('pretrained_hybrid.pth'))
+        self.generator.load_state_dict(torch.load('pretrained_hybrid.pth'))
         
         self.targets = ['GLP-1R', 'GRIN2A', 'HDAC6', 'CHRNA7', 'SIGMAR1', 'PI3K', 'MEK1']
         self.evaluator = ConformalQSARPredictor(self.targets)
@@ -24,7 +24,7 @@ class EvoPep:
         fitness += off_target_score
         
         avg_uncertainty = sum(intervals.values()) / len(intervals)
-        fitness -= (avg_uncertainty * 1.5) 
+        fitness -= (avg_uncertainty * 1.0) 
         
         return fitness
 
